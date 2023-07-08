@@ -1,0 +1,188 @@
+# Python CircleCI 2.0 configuration file
+#
+# Check https://circleci.com/docs/2.0/language-python/ for more details
+#
+version: 2.1
+executors:
+  node:
+    docker:
+      - image: circleci/node:13.8.0
+  python:
+    docker:
+      - image: python:3.11-rc-alpine
+  aws:
+    docker:
+      - image: amazon/aws-cli
+orbs:
+  aws-eks: circleci/aws-eks@2.2.0
+  kubernetes: circleci/kubernetes@1.3
+jobs:
+  build:
+    docker:
+      # Use the same Docker base as the project
+      - image: python:3.7.3-stretch
+
+    working_directory: ~/repo
+    steps:
+      - checkout
+
+      # Download and cache dependencies
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "requirements.txt" }}
+            # fallback to using the latest cache if no exact match is found
+            - v1-dependencies-
+      - run:
+          name: install dependencies
+          command: |
+            python3 -m venv venv
+            . venv/bin/activate
+            make install
+            # Install hadolint
+            wget -O /bin/hadolint https://github.com/hadolint/hadolint/releases/download/v1.16.3/hadolint-Linux-x86_64 &&\
+            chmod +x /bin/hadolint
+      - save_cache:
+          paths:
+            - ./venv
+          key: v1-dependencies-{{ checksum "requirements.txt" }}
+
+      # run lint!
+      - run:
+          name: run lint
+          command: |
+            . venv/bin/activate
+            make lint
+  build-image:
+    docker:
+      - image: docker:20.10.7-git
+
+    working_directory: ~/my-app
+
+    steps:
+      - setup_remote_docker:
+          version: 20.10.7
+      - checkout
+      - run:
+          name: Build and push Docker image
+          command: |
+            docker build -t my-project05 .
+            docker tag my-project05 vanlinh303/my-project05:latest
+            docker login -u vanlinh303 --password "$DOCKER_PASSWORD"
+            docker push vanlinh303/my-project05:latest
+  create-cluster:
+    executor: node
+    working_directory: ~/my-app
+
+    steps:
+      - checkout
+      - add_ssh_keys:
+          fingerprints: ["15:35:ce:d6:9d:38:06:0d:d1:4d:df:42:7f:95:9a:16"]
+      - run:
+          name: Install dependencies
+          command: |
+            sudo apt-get update && sudo apt-get install -yy less
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+
+      - run:
+          name: install eksctl
+          command: |
+            # for ARM systems, set ARCH to: `arm64`, `armv6` or `armv7`
+            ARCH=amd64
+            PLATFORM=$(uname -s)_$ARCH
+            curl -sLO "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$PLATFORM.tar.gz"
+            # (Optional) Verify checksum
+            curl -sL "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_checksums.txt" | grep $PLATFORM | sha256sum --check
+            tar -xzf eksctl_$PLATFORM.tar.gz -C /tmp && rm eksctl_$PLATFORM.tar.gz
+            sudo mv /tmp/eksctl /usr/local/bin
+      - run:
+          name: install kubectl
+          command: |
+            curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.26.2/2023-03-17/bin/linux/amd64/kubectl
+            curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.26.2/2023-03-17/bin/linux/amd64/kubectl.sha256
+            sha256sum -c kubectl.sha256
+            openssl sha1 -sha256 kubectl
+            chmod +x ./kubectl
+            mkdir -p $HOME/bin && cp ./kubectl $HOME/bin/kubectl && export PATH=$PATH:$HOME/bin
+            echo 'export PATH=$PATH:$HOME/bin' >> ~/.bashrc
+            kubectl version --short --client
+      - run:
+          name: create cluster
+          command: |
+            aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID" --profile user2 && aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY" --profile user2 && aws configure set region "$AWS_DEFAULT_REGION" --profile user2
+            chmod +x run_kubernetes.sh
+            ./run_kubernetes.sh
+      - run:
+          name: deployment app
+          command: |
+            kubectl apply -f deployment.yml
+      - run:
+          name: attack to  elb
+          command: |
+            kubectl apply -f services.yml
+      - run:
+          name: get pods
+          command: |
+            kubectl get pods
+            kubectl get nodes
+      - run:
+          name: get elb url
+          command: |
+            kubectl get services elb
+      # - run:
+      #     name: delete exist cluster
+      #     command: |
+      #       chmod +x delete_exist_cluster.sh
+      #       ./delete_exist_cluster.sh
+
+  deployment-cluster:
+    executor: node
+    working_directory: ~/my-app
+    steps:
+      - checkout
+      - add_ssh_keys:
+          fingerprints: ["15:35:ce:d6:9d:38:06:0d:d1:4d:df:42:7f:95:9a:16"]
+
+      - run:
+          name: install kubectl
+          command: |
+            curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.26.2/2023-03-17/bin/linux/amd64/kubectl
+            curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.26.2/2023-03-17/bin/linux/amd64/kubectl.sha256
+            sha256sum -c kubectl.sha256
+            openssl sha1 -sha256 kubectl
+            chmod +x ./kubectl
+            mkdir -p $HOME/bin && cp ./kubectl $HOME/bin/kubectl && export PATH=$PATH:$HOME/bin
+            echo 'export PATH=$PATH:$HOME/bin' >> ~/.bashrc
+            kubectl version --short --client
+      - run:
+          name: get pods
+          command: |
+            kubectl get pods
+            kubectl get nodes
+      - run:
+          name: deployment app
+          command: |
+            kubectl apply -f deployment.yml
+      - run:
+          name: attack to  elb
+          command: |
+            kubectl apply -f services.yml
+      - run:
+          name: get elb url
+          command: |
+            kubectl get services elb
+
+workflows:
+  default:
+    jobs:
+      - build
+      - build-image:
+          requires:
+            - build
+      - create-cluster:
+          requires:
+            - build-image
+      # - deployment-cluster
+      #   # requires:
+      #   #   - create-cluster
