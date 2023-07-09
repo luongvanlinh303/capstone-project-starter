@@ -76,7 +76,7 @@ jobs:
     steps:
       - checkout
       - add_ssh_keys:
-          fingerprints: ["15:35:ce:d6:9d:38:06:0d:d1:4d:df:42:7f:95:9a:16"]
+          fingerprints: ["6b:cf:31:e6:6e:59:32:9f:88:2c:c7:63:26:00:35:92"]
       - run:
           name: Install dependencies
           command: |
@@ -142,7 +142,7 @@ jobs:
     steps:
       - checkout
       - add_ssh_keys:
-          fingerprints: ["15:35:ce:d6:9d:38:06:0d:d1:4d:df:42:7f:95:9a:16"]
+          fingerprints: ["6b:cf:31:e6:6e:59:32:9f:88:2c:c7:63:26:00:35:92"]
 
       - run:
           name: install kubectl
